@@ -1,0 +1,69 @@
+name: "CI Pipeline"
+
+on:
+  pull_request:
+    branches: [ "OrbitalScreenStable" ]
+
+jobs:
+  build-test:
+    name: Build, Lint, Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run lint
+        run: flake8 .
+
+      - name: Run tests
+        run: pytest --maxfail=1 --disable-warnings -q
+
+      - name: Verify commit signatures
+        run: |
+          git log --pretty='%H %G?' | grep -v 'G$' && exit 1 || echo "All commits signed"
+
+      - name: Check for merge commits
+        run: |
+          if git log --merges origin/${{ github.base_ref }}..HEAD | grep commit; then
+            echo "Merge commits detected — linear history required"
+            exit 1
+          fi
+
+  codeql-scan:
+    name: CodeQL Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python' ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{matrix.language}}"
+
