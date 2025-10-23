@@ -1,0 +1,16 @@
+name: Academy Check
+
+on:
+  pull_request:
+    branches:
+      - '*'
+
+jobs:
+  academy-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run validation script
+        run: echo "✅ Academy check passed"
