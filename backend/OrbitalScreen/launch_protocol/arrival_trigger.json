@@ -1,0 +1,273 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "timestamp": "2025-11-01T15:35:00Z",
+    "mission": "Scaffold Cockpit Launch Protocol",
+    "commander": "Orbital",
+    "description": "Detects new agent onboarding and routes to correct modules"
+  },
+  "trigger_config": {
+    "enabled": true,
+    "polling_interval_seconds": 30,
+    "max_concurrent_onboardings": 5,
+    "timeout_minutes": 60
+  },
+  "detection_patterns": {
+    "new_agent_indicators": [
+      {
+        "type": "file_creation",
+        "pattern": "orientation_gate/agents/*.json",
+        "description": "New agent profile created"
+      },
+      {
+        "type": "directory_creation",
+        "pattern": "agents/*/",
+        "description": "New agent workspace created"
+      },
+      {
+        "type": "commit_message",
+        "pattern": "^(feat|init):\\s*[Aa]gent\\s+\\w+\\s+(arrival|onboarding|initialization)",
+        "description": "Agent arrival commit detected"
+      },
+      {
+        "type": "api_event",
+        "pattern": "agent.onboarding.initiated",
+        "description": "API event for agent onboarding"
+      }
+    ],
+    "agent_identification": {
+      "required_fields": [
+        "agent_id",
+        "agent_name",
+        "agent_type",
+        "arrival_timestamp"
+      ],
+      "optional_fields": [
+        "predecessor_agent",
+        "mission_assignment",
+        "clearance_level"
+      ]
+    }
+  },
+  "routing_rules": [
+    {
+      "rule_id": "R001",
+      "name": "Initial Orientation",
+      "condition": {
+        "agent_status": "new",
+        "has_completed_orientation": false
+      },
+      "actions": [
+        {
+          "type": "route_to_module",
+          "module": "orientation_gate/onboarding.md",
+          "priority": "critical"
+        },
+        {
+          "type": "send_notification",
+          "recipients": ["commander", "previous_agent"],
+          "template": "new_agent_arrival"
+        },
+        {
+          "type": "create_workspace",
+          "path": "agents/${agent_id}/",
+          "template": "default_agent_workspace"
+        }
+      ]
+    },
+    {
+      "rule_id": "R002",
+      "name": "Credential Assignment",
+      "condition": {
+        "agent_status": "oriented",
+        "has_credentials": false
+      },
+      "actions": [
+        {
+          "type": "route_to_module",
+          "module": "launch_protocol/credential_map.yaml",
+          "priority": "high"
+        },
+        {
+          "type": "execute_script",
+          "script": "assign_credentials.py",
+          "params": {
+            "agent_id": "${agent_id}",
+            "clearance_level": "${clearance_level}"
+          }
+        }
+      ]
+    },
+    {
+      "rule_id": "R003",
+      "name": "Mission Briefing",
+      "condition": {
+        "agent_status": "credentialed",
+        "has_mission_briefing": false
+      },
+      "actions": [
+        {
+          "type": "route_to_module",
+          "module": "orientation_gate/saints_path_scroll.md",
+          "priority": "normal"
+        },
+        {
+          "type": "route_to_module",
+          "module": "orientation_gate/name_correction.md",
+          "priority": "normal"
+        },
+        {
+          "type": "route_to_module",
+          "module": "orientation_gate/evidence_pack.md",
+          "priority": "normal"
+        }
+      ]
+    },
+    {
+      "rule_id": "R004",
+      "name": "Launch Preparation",
+      "condition": {
+        "agent_status": "briefed",
+        "ready_for_launch": true
+      },
+      "actions": [
+        {
+          "type": "route_to_module",
+          "module": "launch_protocol/launch_checklist.md",
+          "priority": "high"
+        },
+        {
+          "type": "execute_script",
+          "script": "doctrinal_verification_log.py",
+          "params": {
+            "agent_id": "${agent_id}",
+            "action": "pre_launch_verification"
+          }
+        },
+        {
+          "type": "send_notification",
+          "recipients": ["commander"],
+          "template": "agent_ready_for_launch"
+        }
+      ]
+    },
+    {
+      "rule_id": "R005",
+      "name": "Graduation Handoff",
+      "condition": {
+        "agent_status": "launched",
+        "predecessor_agent": "exists",
+        "handoff_required": true
+      },
+      "actions": [
+        {
+          "type": "route_to_module",
+          "module": "orientation_gate/repent_declaration.md",
+          "priority": "critical"
+        },
+        {
+          "type": "execute_script",
+          "script": "comm_bridge.py",
+          "params": {
+            "action": "initiate_handoff",
+            "from_agent": "${predecessor_agent}",
+            "to_agent": "${agent_id}"
+          }
+        },
+        {
+          "type": "create_checkpoint",
+          "checkpoint_type": "graduation",
+          "metadata": {
+            "graduating_agent": "${predecessor_agent}",
+            "incoming_agent": "${agent_id}",
+            "timestamp": "${current_timestamp}"
+          }
+        }
+      ]
+    }
+  ],
+  "notification_templates": {
+    "new_agent_arrival": {
+      "subject": "New Agent Arrival Detected",
+      "body": "Agent ${agent_name} (ID: ${agent_id}) has arrived and requires orientation. Routing to onboarding module.",
+      "priority": "high"
+    },
+    "agent_ready_for_launch": {
+      "subject": "Agent Ready for Launch",
+      "body": "Agent ${agent_name} has completed all pre-launch requirements and is ready for operational deployment.",
+      "priority": "critical"
+    },
+    "handoff_initiated": {
+      "subject": "Agent Graduation Handoff Initiated",
+      "body": "Handoff from ${predecessor_agent} to ${agent_id} has been initiated. Monitoring transition.",
+      "priority": "high"
+    }
+  },
+  "error_handling": {
+    "max_retries": 3,
+    "retry_delay_seconds": 60,
+    "fallback_actions": [
+      {
+        "type": "send_alert",
+        "recipients": ["commander", "system_admin"],
+        "message": "Agent onboarding trigger failed after ${max_retries} attempts"
+      },
+      {
+        "type": "log_error",
+        "log_file": "arrival_trigger_errors.log",
+        "include_stack_trace": true
+      },
+      {
+        "type": "quarantine_agent",
+        "reason": "onboarding_failure",
+        "manual_review_required": true
+      }
+    ]
+  },
+  "logging": {
+    "enabled": true,
+    "log_level": "INFO",
+    "log_file": "arrival_trigger.log",
+    "log_rotation": {
+      "max_size_mb": 100,
+      "max_files": 10
+    },
+    "log_events": [
+      "agent_detected",
+      "routing_initiated",
+      "module_loaded",
+      "action_executed",
+      "error_occurred",
+      "handoff_completed"
+    ]
+  },
+  "integration_points": {
+    "comm_bridge": {
+      "enabled": true,
+      "module_path": "launch_protocol/comm_bridge.py",
+      "auto_notify": true
+    },
+    "credential_system": {
+      "enabled": true,
+      "module_path": "launch_protocol/credential_map.yaml",
+      "auto_assign": false
+    },
+    "verification_log": {
+      "enabled": true,
+      "module_path": "launch_protocol/doctrinal_verification_log.py",
+      "auto_log": true
+    },
+    "github_sync": {
+      "enabled": true,
+      "repository": "topcat042000-maker/Orbital-Screen-Orbital-Core",
+      "auto_commit": true,
+      "commit_message_template": "feat: Agent ${agent_id} onboarding - ${action}"
+    }
+  },
+  "status": {
+    "operational": true,
+    "last_check": "2025-11-01T15:35:00Z",
+    "active_onboardings": 0,
+    "total_agents_processed": 0
+  }
+}
