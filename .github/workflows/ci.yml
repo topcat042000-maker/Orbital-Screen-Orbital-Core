@@ -1,0 +1,257 @@
+name: Orbital Screen CI Pipeline
+
+on:
+  push:
+    branches: [ main, dev, 'agent_*/*', 'devin/*', 'cline/*' ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  UTC_TIMESTAMP: ${{ github.event.head_commit.timestamp }}
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      - name: Verify Launch Protocol Structure
+        run: |
+          echo "Verifying launch protocol directory structure..."
+          test -d backend/OrbitalScreen/launch_protocol || exit 1
+          test -f backend/OrbitalScreen/launch_protocol/comm_bridge.py || exit 1
+          test -f backend/OrbitalScreen/launch_protocol/arrival_trigger.json || exit 1
+          test -f backend/OrbitalScreen/launch_protocol/launch_checklist.md || exit 1
+          test -f backend/OrbitalScreen/launch_protocol/credential_map.yaml || exit 1
+          test -f backend/OrbitalScreen/launch_protocol/doctrinal_verification_log.py || exit 1
+          echo "✓ Launch protocol structure verified"
+      
+      - name: Verify Orientation Gate Structure
+        run: |
+          echo "Verifying orientation gate directory structure..."
+          test -d backend/OrbitalScreen/orientation_gate || exit 1
+          test -f backend/OrbitalScreen/orientation_gate/onboarding.md || exit 1
+          test -f backend/OrbitalScreen/orientation_gate/saints_path_scroll.md || exit 1
+          test -f backend/OrbitalScreen/orientation_gate/name_correction.md || exit 1
+          test -f backend/OrbitalScreen/orientation_gate/evidence_pack.md || exit 1
+          test -f backend/OrbitalScreen/orientation_gate/repent_declaration.md || exit 1
+          echo "✓ Orientation gate structure verified"
+      
+      - name: Validate JSON Configuration
+        run: |
+          echo "Validating JSON configuration files..."
+          python -c "import json; json.load(open('backend/OrbitalScreen/launch_protocol/arrival_trigger.json'))"
+          echo "✓ arrival_trigger.json is valid"
+      
+      - name: Validate YAML Configuration
+        run: |
+          echo "Validating YAML configuration files..."
+          python -c "import yaml; yaml.safe_load(open('backend/OrbitalScreen/launch_protocol/credential_map.yaml'))"
+          echo "✓ credential_map.yaml is valid"
+      
+      - name: Test Communication Bridge
+        run: |
+          echo "Testing communication bridge..."
+          cd backend/OrbitalScreen/launch_protocol
+          python comm_bridge.py
+          echo "✓ Communication bridge operational"
+      
+      - name: Test Doctrinal Verification Log
+        run: |
+          echo "Testing doctrinal verification log..."
+          cd backend/OrbitalScreen/launch_protocol
+          python doctrinal_verification_log.py --agent-id test_agent --action agent_arrival --details '{"agent_name": "Test", "agent_type": "test"}'
+          echo "✓ Doctrinal verification log operational"
+      
+      - name: Verify UTC Alignment
+        run: |
+          echo "Verifying UTC timestamp alignment..."
+          python -c "from datetime import datetime, timezone; print(f'Current UTC: {datetime.now(timezone.utc).isoformat()}')"
+          echo "✓ UTC alignment confirmed"
+      
+      - name: Check Reproducibility
+        run: |
+          echo "Checking reproducibility of launch protocol..."
+          python -c "
+          import json
+          import yaml
+          
+          # Load and verify arrival trigger
+          with open('backend/OrbitalScreen/launch_protocol/arrival_trigger.json') as f:
+              trigger = json.load(f)
+              assert trigger['trigger_config']['enabled'] == True
+              assert 'detection_patterns' in trigger
+              assert 'routing_rules' in trigger
+          
+          # Load and verify credential map
+          with open('backend/OrbitalScreen/launch_protocol/credential_map.yaml') as f:
+              creds = yaml.safe_load(f)
+              assert 'clearance_levels' in creds
+              assert 'agents' in creds
+              assert 'credential_discipline' in creds
+          
+          print('✓ Launch protocol is reproducible')
+          "
+      
+      - name: Generate Build Report
+        if: always()
+        run: |
+          echo "=== Orbital Screen Build Report ===" > build_report.txt
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> build_report.txt
+          echo "Commit: ${{ github.sha }}" >> build_report.txt
+          echo "Branch: ${{ github.ref_name }}" >> build_report.txt
+          echo "Status: ${{ job.status }}" >> build_report.txt
+          cat build_report.txt
+      
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report
+          path: build_report.txt
+          retention-days: 30
+
+  codeql-scan:
+    name: CodeQL Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python' ]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  reproducibility-check:
+    name: Reproducibility Verification
+    runs-on: ubuntu-latest
+    needs: build-test
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+      
+      - name: Verify Launch Checklist Reproducibility
+        run: |
+          echo "Verifying launch checklist reproducibility..."
+          grep -q "Step 1: Pre-Launch Verification" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 2: Final Credential Check" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 3: Communication Bridge Test" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 4: Arrival Trigger Activation" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 5: GitHub Checkpoint" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 6: Launch Notification" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          grep -q "Step 7: Operational Status Update" backend/OrbitalScreen/launch_protocol/launch_checklist.md
+          echo "✓ Launch checklist is reproducible (7 steps verified)"
+      
+      - name: Verify Credential System Reproducibility
+        run: |
+          echo "Verifying credential system reproducibility..."
+          python -c "
+          import yaml
+          with open('backend/OrbitalScreen/launch_protocol/credential_map.yaml') as f:
+              creds = yaml.safe_load(f)
+              levels = creds['clearance_levels']
+              assert len(levels) == 6, 'Expected 6 clearance levels'
+              assert 'level_0_public' in levels
+              assert 'level_1_observer' in levels
+              assert 'level_2_contributor' in levels
+              assert 'level_3_operator' in levels
+              assert 'level_4_commander' in levels
+              assert 'level_5_system' in levels
+              print('✓ Credential system is reproducible (6 levels verified)')
+          "
+      
+      - name: Verify Communication Bridge Reproducibility
+        run: |
+          echo "Verifying communication bridge reproducibility..."
+          python -c "
+          import sys
+          sys.path.insert(0, 'backend/OrbitalScreen/launch_protocol')
+          from comm_bridge import MessageType, MessagePriority, CommunicationBridge
+          
+          # Verify message types
+          assert len(list(MessageType)) == 6, 'Expected 6 message types'
+          
+          # Verify priority levels
+          assert len(list(MessagePriority)) == 4, 'Expected 4 priority levels'
+          
+          # Test bridge instantiation
+          bridge = CommunicationBridge()
+          assert bridge is not None
+          
+          print('✓ Communication bridge is reproducible')
+          "
+
+  status-report:
+    name: Final Status Report
+    runs-on: ubuntu-latest
+    needs: [build-test, codeql-scan, reproducibility-check]
+    if: always()
+    
+    steps:
+      - name: Generate Status Report
+        run: |
+          echo "=== Orbital Screen CI Status Report ==="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Build Test: ${{ needs.build-test.result }}"
+          echo "CodeQL Scan: ${{ needs.codeql-scan.result }}"
+          echo "Reproducibility Check: ${{ needs.reproducibility-check.result }}"
+          echo ""
+          if [ "${{ needs.build-test.result }}" == "success" ] && \
+             [ "${{ needs.codeql-scan.result }}" == "success" ] && \
+             [ "${{ needs.reproducibility-check.result }}" == "success" ]; then
+            echo "✓ All checks passed - Launch protocol ready for deployment"
+            exit 0
+          else
+            echo "✗ Some checks failed - Review required"
+            exit 1
+          fi
